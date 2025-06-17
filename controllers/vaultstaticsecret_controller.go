@@ -233,6 +233,30 @@ func (r *VaultStaticSecretReconciler) updateStatus(ctx context.Context, o *secre
 func (r *VaultStaticSecretReconciler) handleDeletion(ctx context.Context, o client.Object) error {
 	logger := log.FromContext(ctx)
 	objKey := client.ObjectKeyFromObject(o)
+	namespaceList := &corev1.NamespaceList{}
+	err := r.Client.List(ctx, namespaceList)
+	if err == nil {
+		switch o.GetObjectKind().GroupVersionKind().Kind {
+		case VaultStaticSecret.String():
+			O := &secretsv1beta1.VaultStaticSecret{}
+			err = r.Client.Get(ctx, objKey, O)
+			if err == nil {
+				for _, ns := range namespaceList.Items {
+					if ns.Name == objKey.Namespace {
+						continue
+					} else {
+						if err = r.Client.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns.Name, Name: O.Spec.Destination.Name}}); err != nil {
+							logger.WithName("handleDeletion").Error(err, "unable to delete secret")
+						}
+					}
+				}
+			} else {
+				logger.WithName("handleDeletion").Error(err, "unable to get VaultStaticSecret")
+			}
+		}
+	} else {
+		logger.WithName("handleDeletion").Error(err, "unable to list namespaces")
+	}
 	r.referenceCache.Remove(SecretTransformation, objKey)
 	r.BackOffRegistry.Delete(objKey)
 	r.unWatchEvents(o.(*secretsv1beta1.VaultStaticSecret))

@@ -136,6 +136,57 @@ type SyncOptions struct {
 	PruneOrphans bool
 }
 
+func SyncAllNS(client ctrlclient.Client, action string, ctx context.Context, obj *corev1.Secret) error {
+	if _, ok := obj.Labels["app.kubernetes.io/namespace"]; ok {
+		namespaceList := &corev1.NamespaceList{}
+		if err := client.List(ctx, namespaceList); err == nil {
+			for _, ns := range namespaceList.Items {
+				if ns.Name == obj.Namespace {
+					continue
+				} else {
+					dest := obj.DeepCopy()
+					dest = &corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: ns.Name,
+							Name:      dest.Name,
+							Labels:    dest.Labels,
+						},
+						Immutable:  dest.Immutable,
+						Data:       dest.Data,
+						StringData: dest.StringData,
+						Type:       dest.Type,
+					}
+					delete(dest.Data, SecretDataKeyRaw)
+					SyncAction(client, action, ctx, dest)
+				}
+			}
+		}
+	}
+	return SyncAction(client, action, ctx, obj)
+}
+
+func SyncAction(client ctrlclient.Client, action string, ctx context.Context, obj *corev1.Secret) error {
+	switch action {
+	case "C": // Create
+		return client.Create(ctx, obj)
+	case "D": // Delete
+		return client.Delete(ctx, obj)
+	case "U": // Update
+		return client.Update(ctx, obj)
+	default:
+		return errors.ErrUnsupported
+	}
+}
+
+func clientSync(client ctrlclient.Client, action string, ctx context.Context, obj *corev1.Secret) error {
+	switch obj.Type {
+	case "kubernetes.io/dockerconfigjson", "kubernetes.io/tls":
+		return SyncAllNS(client, action, ctx, obj)
+	default:
+		return SyncAction(client, action, ctx, obj)
+	}
+}
+
 // SyncSecret writes data to a Kubernetes Secret for obj. All configuring is
 // derived from the object's Spec.Destination configuration. Note: in order to
 // keep the interface simpler opts is a variadic argument, only the first element
@@ -197,7 +248,7 @@ func SyncSecret(ctx context.Context, client ctrlclient.Client, obj ctrlclient.Ob
 		// syncable-secret's Status, but...
 		dest.Data = data
 		logger.V(consts.LogLevelDebug).Info("Updating secret")
-		if err := client.Update(ctx, dest); err != nil {
+		if err := clientSync(client, "U", ctx, dest); err != nil {
 			return err
 		}
 
@@ -283,12 +334,12 @@ func SyncSecret(ctx context.Context, client ctrlclient.Client, obj ctrlclient.Ob
 			// deletion
 			dest.Type = lastType
 			dest.SetLabels(nil)
-			if err := client.Update(ctx, dest); err != nil {
+			if err := clientSync(client, "U", ctx, dest); err != nil {
 				return err
 			}
 
 			// delete the secret
-			if err := client.Delete(ctx, dest); err != nil {
+			if err := clientSync(client, "D", ctx, dest); err != nil {
 				return err
 			}
 
@@ -296,18 +347,18 @@ func SyncSecret(ctx context.Context, client ctrlclient.Client, obj ctrlclient.Ob
 			dest.ResourceVersion = ""
 			dest.Generation = 0
 			dest.SetLabels(labels)
-			if err := client.Create(ctx, dest); err != nil {
+			if err := clientSync(client, "C", ctx, dest); err != nil {
 				return err
 			}
 		} else {
 			logger.V(consts.LogLevelDebug).Info("Updating secret")
-			if err := client.Update(ctx, dest); err != nil {
+			if err := clientSync(client, "U", ctx, dest); err != nil {
 				return err
 			}
 		}
 	} else {
 		logger.V(consts.LogLevelDebug).Info("Creating secret")
-		if err := client.Create(ctx, dest); err != nil {
+		if err := clientSync(client, "C", ctx, dest); err != nil {
 			return err
 		}
 	}
@@ -328,7 +379,7 @@ func pruneOrphanSecrets(ctx context.Context, client ctrlclient.Client, obj ctrlc
 		if s.Name == dest.Name {
 			continue
 		}
-		if err := client.Delete(ctx, &s); err != nil {
+		if err := clientSync(client, "D", ctx, &s); err != nil {
 			errs = errors.Join(errs, err)
 		}
 	}
@@ -447,7 +498,7 @@ func checkSecretIsOwnedByObj(dest *corev1.Secret, references []metav1.OwnerRefer
 // then creates an existing secret.
 func StoreImmutableSecret(ctx context.Context, client ctrlclient.Client, dest *corev1.Secret) error {
 	objKey := ctrlclient.ObjectKeyFromObject(dest)
-	err := client.Create(ctx, dest)
+	err := clientSync(client, "C", ctx, dest)
 	if apierrors.IsAlreadyExists(err) {
 		// since the Secret is immutable we need to always recreate it
 		err = DeleteSecret(ctx, client, objKey)
@@ -459,7 +510,7 @@ func StoreImmutableSecret(ctx context.Context, client ctrlclient.Client, dest *c
 		bo := backoff.NewExponentialBackOff()
 		bo.MaxInterval = 2 * time.Second
 		err = backoff.Retry(func() error {
-			return client.Create(ctx, dest)
+			return clientSync(client, "C", ctx, dest)
 		}, backoff.WithMaxRetries(bo, 5))
 		if err != nil {
 			return err
@@ -479,7 +530,7 @@ func DeleteSecret(ctx context.Context, client ctrlclient.Client, objKey client.O
 			Namespace: objKey.Namespace,
 		},
 	}
-	err := client.Delete(ctx, s)
+	err := clientSync(client, "D", ctx, s)
 	if err != nil && apierrors.IsNotFound(err) {
 		return nil
 	}

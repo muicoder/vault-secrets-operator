@@ -12,7 +12,7 @@ export TZ=UTC
 BUILD_DATE="$(date +%Y-%m-%dT%H:%M:%S%z)"
 GIT_COMMIT="$(git rev-parse HEAD)"
 
-DEFAULT_GIT_VERSION="${DEFAULT_GIT_VERSION:-0.0.0-dev}"
+DEFAULT_GIT_VERSION="${DEFAULT_GIT_VERSION:-0.10.0-dev}"
 
 # The Common Release Tooling workflow will populate the VERSION env var,
 # in that case will not compute the version from Git.
@@ -46,11 +46,12 @@ fi
 
 eval $(go env | egrep "^($GO_ENV_VARS)=")
 flags=(
+  -extldflags -static -w -s
   -X ${PACKAGE_PATH}.Major=${MAJOR}
   -X ${PACKAGE_PATH}.Minor=${MINOR}
-  -X ${PACKAGE_PATH}.GitVersion=${GIT_VERSION}
+  -X ${PACKAGE_PATH}.GitVersion=${GIT_VERSION%%-*}
   -X ${PACKAGE_PATH}.GitCommit=${GIT_COMMIT}
-  -X ${PACKAGE_PATH}.GitTreeState=${GIT_TREE_STATE}
+  -X ${PACKAGE_PATH}.GitTreeState=clean
   -X ${PACKAGE_PATH}.BuildDate=${BUILD_DATE}
   -X ${PACKAGE_PATH}.GoVersion=${GOVERSION}
   -X ${PACKAGE_PATH}.Compiler=gc

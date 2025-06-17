@@ -233,6 +233,24 @@ func (r *VaultStaticSecretReconciler) updateStatus(ctx context.Context, o *secre
 func (r *VaultStaticSecretReconciler) handleDeletion(ctx context.Context, o client.Object) error {
 	logger := log.FromContext(ctx)
 	objKey := client.ObjectKeyFromObject(o)
+	switch o.GetObjectKind().GroupVersionKind().Kind {
+	case VaultStaticSecret.String():
+		O := &secretsv1beta1.VaultStaticSecret{}
+		if err := r.Client.Get(ctx, objKey, O); err == nil {
+			if _, ok := O.Spec.Destination.Labels["app.kubernetes.io/namespace"]; ok {
+				namespaceList := &corev1.NamespaceList{}
+				if err = r.Client.List(ctx, namespaceList); err == nil {
+					for _, ns := range namespaceList.Items {
+						if ns.Name == objKey.Namespace {
+							continue
+						} else {
+							r.Client.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns.Name, Name: O.Spec.Destination.Name}})
+						}
+					}
+				}
+			}
+		}
+	}
 	r.referenceCache.Remove(SecretTransformation, objKey)
 	r.BackOffRegistry.Delete(objKey)
 	r.unWatchEvents(o.(*secretsv1beta1.VaultStaticSecret))
